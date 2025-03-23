@@ -22,7 +22,8 @@ class GPXAnalyzer:
         self.root = self.tree.getroot()
         self.namespace = self.root.nsmap[None]
 
-    def _haversine_distance(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    @staticmethod
+    def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
         """Calculate the great circle distance between two points using the haversine formula."""
         R = 6371  # Earth's radius in kilometers
 
