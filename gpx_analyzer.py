@@ -153,12 +153,12 @@ def analyze(gpx_file, max_speed, max_elevation_change, max_gap):
 @cli.command()
 @click.argument('input_file', type=click.Path(exists=True))
 @click.argument('output_file', type=click.Path())
-@click.option('--trim-distance', type=click.Choice(['0.25', '0.5', '1.0']), default='0.25',
-              help='Distance in miles to trim from start and end of track')
+@click.option('--trim-distance', type=click.Choice(['0.25', '0.5', '1.0']), is_flag=True, flag_value='0.25',
+              help='Trim 0.25 miles from start and end of track (or specify custom distance)')
 @click.option('--start-lat', type=float, help='Latitude of start location to remove points near')
 @click.option('--start-lon', type=float, help='Longitude of start location to remove points near')
-@click.option('--start-radius', type=click.Choice(['0.25', '0.5', '1.0']), default='0.25',
-              help='Radius in miles to remove points near start location')
+@click.option('--start-radius', type=click.Choice(['0.25', '0.5', '1.0']), is_flag=True, flag_value='0.25',
+              help='Remove points within 0.25 miles of start location (or specify custom radius)')
 def strip_privacy(input_file: str, output_file: str, trim_distance: str, start_lat: float, 
                  start_lon: float, start_radius: str):
     """Strip privacy-sensitive details from a GPX file."""
@@ -169,15 +169,19 @@ def strip_privacy(input_file: str, output_file: str, trim_distance: str, start_l
         namespace = root.nsmap[None]
 
         # Create a new GPX element with only essential attributes
-        new_root = etree.Element('gpx', 
-            version="1.1",
-            creator="GPXAnalyzer",
-            xmlns="http://www.topografix.com/GPX/1/1",
-            nsmap=root.nsmap)
+        new_root = etree.Element('gpx', attrib=root.attrib, nsmap=root.nsmap)
 
         # Convert miles to kilometers for calculations
-        trim_distance_km = float(trim_distance) * 1.60934
-        start_radius_km = float(start_radius) * 1.60934
+        trim_distance_km = float(trim_distance) * 1.60934 if trim_distance else None
+        start_radius_km = float(start_radius) * 1.60934 if start_radius else None
+
+        # Get first trackpoint coordinates if start location not provided and start radius is specified
+        if start_radius is not None and (start_lat is None or start_lon is None):
+            first_trkpt = root.find(f'.//{{{namespace}}}trkpt')
+            if first_trkpt is not None:
+                start_lat = float(first_trkpt.get('lat'))
+                start_lon = float(first_trkpt.get('lon'))
+                click.echo(f"Using first trackpoint coordinates as start location: {start_lat}, {start_lon}")
 
         # Copy tracks
         for trk in root.findall(f'.//{{{namespace}}}trk'):
@@ -201,42 +205,45 @@ def strip_privacy(input_file: str, output_file: str, trim_distance: str, start_l
                 if not trkpts:
                     continue
 
-                # Calculate cumulative distances for trimming
+                # Calculate cumulative distances for trimming only if trim_distance is provided
                 distances = []
                 total_distance = 0
-                for i in range(len(trkpts) - 1):
-                    lat1 = float(trkpts[i].get('lat'))
-                    lon1 = float(trkpts[i].get('lon'))
-                    lat2 = float(trkpts[i + 1].get('lat'))
-                    lon2 = float(trkpts[i + 1].get('lon'))
-                    distance = GPXAnalyzer._haversine_distance(lat1, lon1, lat2, lon2)
-                    total_distance += distance
-                    distances.append(total_distance)
+                if trim_distance_km is not None:
+                    for i in range(len(trkpts) - 1):
+                        lat1 = float(trkpts[i].get('lat'))
+                        lon1 = float(trkpts[i].get('lon'))
+                        lat2 = float(trkpts[i + 1].get('lat'))
+                        lon2 = float(trkpts[i + 1].get('lon'))
+                        distance = GPXAnalyzer._haversine_distance(lat1, lon1, lat2, lon2)
+                        total_distance += distance
+                        distances.append(total_distance)
 
                 # Find points to keep based on trim distance
                 start_idx = 0
                 end_idx = len(trkpts)
                 
-                # Trim from start
-                for i, dist in enumerate(distances):
-                    if dist >= trim_distance_km:
-                        start_idx = i
-                        break
+                # Only perform trimming if trim_distance was provided
+                if trim_distance_km is not None:
+                    # Trim from start
+                    for i, dist in enumerate(distances):
+                        if dist >= trim_distance_km:
+                            start_idx = i
+                            break
 
-                # Trim from end
-                for i in range(len(distances) - 1, -1, -1):
-                    if total_distance - distances[i] >= trim_distance_km:
-                        end_idx = i + 1
-                        break
+                    # Trim from end
+                    for i in range(len(distances) - 1, -1, -1):
+                        if total_distance - distances[i] >= trim_distance_km:
+                            end_idx = i + 1
+                            break
 
                 # Process trackpoints
                 for i, trkpt in enumerate(trkpts):
-                    # Skip points outside the trimmed range
-                    if i < start_idx or i >= end_idx:
+                    # Skip points outside the trimmed range if trimming is enabled
+                    if trim_distance_km is not None and (i < start_idx or i >= end_idx):
                         continue
 
-                    # Skip points near start location if specified
-                    if start_lat is not None and start_lon is not None:
+                    # Skip points near start location only if start radius is specified
+                    if start_radius is not None and start_lat is not None and start_lon is not None:
                         lat = float(trkpt.get('lat'))
                         lon = float(trkpt.get('lon'))
                         distance = GPXAnalyzer._haversine_distance(start_lat, start_lon, lat, lon)
